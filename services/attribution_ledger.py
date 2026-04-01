@@ -26,11 +26,11 @@ class ClaimStatus(str, Enum):
 
 @dataclass
 class AttributionClaim:
-    id: UUID = field(default_factory=uuid4)
     contributor: str
     repo: str
     commit_sha: str
     amount_cents: int
+    id: UUID = field(default_factory=uuid4)
     status: ClaimStatus = ClaimStatus.PENDING
     verification_report_id: Optional[UUID] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -81,8 +81,12 @@ class AttributionLedger:
         )
         data = self._read_db()
         data["claims"].append({
-            **claim.__dict__,
+            "contributor": claim.contributor,
+            "repo": claim.repo,
+            "commit_sha": claim.commit_sha,
+            "amount_cents": claim.amount_cents,
             "id": str(claim.id),
+            "status": claim.status.value,
             "verification_report_id": None,
             "created_at": claim.created_at.isoformat(),
             "verified_at": None,
@@ -181,7 +185,13 @@ class AttributionLedger:
 
     def _dict_to_claim(self, d: dict) -> AttributionClaim:
         """Convert dict back to AttributionClaim."""
+        # Handle status enum
+        if isinstance(d.get("status"), str):
+            d["status"] = ClaimStatus(d["status"])
         d["id"] = UUID(d["id"])
         if d.get("verification_report_id"):
             d["verification_report_id"] = UUID(d["verification_report_id"])
+        # Remove payout_transaction_id if None
+        if d.get("payout_transaction_id") is None:
+            pass  # Optional fields with None are fine
         return AttributionClaim(**d)

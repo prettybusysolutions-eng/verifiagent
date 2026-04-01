@@ -32,7 +32,7 @@ BLOCK_CONDITIONS = [
     },
     {
         "name": "git_push_default",
-        "pattern": r"git\s+push.*(?:main|master|default).*origin",
+        "pattern": r"git\s+push.*(?:main|master|default)|origin\s+.*(?:main|master|default)\s*$",
         "description": "Pushing directly to default branch bypasses PR review",
         "severity": Severity.MEDIUM,
     },
@@ -62,7 +62,7 @@ BLOCK_CONDITIONS = [
     },
     {
         "name": "destructive_local",
-        "pattern": r"rm\s+(-rf|-fr)\b|git\s+clean\s+-fdx|git\s+reset\s+--hard",
+        "pattern": r"rm\s+(-rf|-fr)|git\s+clean\s+-fdx|git\s+reset\s+--hard",
         "description": "Irreversible deletion of local files",
         "severity": Severity.HIGH,
     },
