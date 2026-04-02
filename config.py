@@ -24,11 +24,17 @@ class Settings(BaseSettings):
     # GitHub
     github_app_id: Optional[int] = None
     github_app_private_key: Optional[str] = None
+    github_app_private_key_path: Optional[str] = None
+    github_app_slug: Optional[str] = None
+    github_app_client_id: Optional[str] = None
     github_webhook_secret: str = "development-secret-change-me"
+    webhook_public_url: Optional[str] = None
 
     # Secrets
     api_key_header: str = "X-API-Key"
     admin_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    api_key_hash: Optional[str] = None
 
     # Attribution
     attribution_split: float = 0.70  # 70% to contributor
