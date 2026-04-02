@@ -11,6 +11,7 @@ from typing import Optional
 from config import settings
 from models.verification import WebhookPayload, VerificationReport
 from services.verdict_engine import VerdictEngine
+from services import github_app_client as gh_app
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -90,6 +91,22 @@ async def github_webhook(
                     commit_sha=commit_sha,
                     pr_url=pr_url,
                 )
+
+                # Post GitHub Check Run if we have installation context
+                installation_id = installation.get("id") if installation else None
+                if installation_id and commit_sha and repo_full:
+                    try:
+                        gh_app.create_check_run(
+                            repo_full=repo_full,
+                            commit_sha=commit_sha,
+                            installation_id=int(installation_id),
+                            verdict=report.verdict.value,
+                            summary=report.summary,
+                            report_id=str(report.id),
+                        )
+                    except Exception as check_err:
+                        pass  # Don't fail the webhook if Check Run post fails
+
                 return {
                     "status": "verification_complete",
                     "report_id": str(report.id),
