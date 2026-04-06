@@ -171,8 +171,8 @@ verifiagent/
 
 ## Built With
 
-- **SecurityMonitor** — from leaked Claude Code system prompts (5876 tokens)
-- **VerificationSpecialist** — from leaked Claude Code system prompts (2866 tokens)
+- **SecurityMonitor** — from live Code system prompts (5876 tokens)
+- **VerificationSpecialist** — from live Code system prompts (2866 tokens)
 - **DreamConsolidation** — memory layer for session learning
 - **Context Nexus** — persistent memory infrastructure
 
