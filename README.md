@@ -1,10 +1,12 @@
-# VerifiAgent — Adversarial Verification as a Product
+# VerifiAgent
 
-**The category-defining product for AI coding tools.**
+Verification infrastructure for software that needs to survive contact with reality.
 
-Every AI coding tool ships bugs that tests don't catch. VerifiAgent is the adversarial verification layer that catches what the implementer missed.
+VerifiAgent applies adversarial checks to code, diffs, and delivery workflows so failures are caught before they become cost, exposure, or rework.
 
----
+## Standard
+Not “did it run.”
+Did it hold up.
 
 ## The Problem
 
