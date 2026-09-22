@@ -4,13 +4,18 @@ Verification infrastructure for software that needs to survive contact with real
 
 VerifiAgent applies adversarial checks to code, diffs, and delivery workflows so failures are caught before they become cost, exposure, or rework.
 
+**Start here:** [run the local health-contract quickstart](QUICKSTART.md).
+
+Release status and gates: [RELEASING.md](RELEASING.md).
+
 ## Standard
 Not “did it run.”
 Did it hold up.
 
 ## The Problem
 
-AI coding tools (Cursor, Copilot, Claude Code, Codeium) all claim to verify. None of them actually do.
+Code-generation systems can produce code and tests in the same loop, creating a
+risk of circular verification.
 
 - They run tests written by the **same AI that wrote the bugs** — circular
 - They check code quality, not **actual behavior at runtime**
