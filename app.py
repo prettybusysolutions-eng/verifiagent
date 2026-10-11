@@ -18,6 +18,7 @@ from routes import verify, webhooks
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Graceful startup and shutdown."""
+    verify.store().recover_interrupted()
     # Startup
     print(f"VerifiAgent v{settings.version} starting...")
     print(f"  Scratch dir: {settings.scratch_dir}")
@@ -40,8 +41,8 @@ app = FastAPI(
 # CORS for API access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -69,3 +70,4 @@ if __name__ == "__main__":
         port=settings.port,
         reload=False,
     )
+

@@ -6,3 +6,6 @@
 verifiagent.db
 __pycache__/
 .pytest_cache/
+
+
+state/
