@@ -6,12 +6,15 @@ from pathlib import Path
 
 
 class IsolatedRunner:
-    def __init__(self, image):
+    def __init__(self, image, *, timeout_seconds=120):
         if not image or not re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}', image):
             raise ValueError('Worker image must be pinned by SHA256 digest')
         if not shutil.which('docker'):
             raise OSError('Docker worker unavailable')
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 120:
+            raise ValueError("Worker timeout must be an integer from 1 to 120 seconds")
         self.image = image
+        self.timeout_seconds = timeout_seconds
 
     def __call__(self, command, project_path):
         path = Path(project_path).resolve(strict=True)
@@ -27,7 +30,7 @@ class IsolatedRunner:
                 '--workdir=/work', self.image, 'sh', '-c',
                 'cp -R /source/. /work/ && ' + command]
         try:
-            return subprocess.run(args, capture_output=True, text=True, timeout=120)
+            return subprocess.run(args, capture_output=True, text=True, timeout=self.timeout_seconds)
         finally:
             # docker client termination alone does not stop its container.
             subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=15)

@@ -1,0 +1,36 @@
+name: Actual isolated runtime
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  isolated-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Resolve immutable test-worker image
+        run: |
+          docker pull python:3.12-alpine
+          image=$(docker image inspect python:3.12-alpine --format '{{index .RepoDigests 0}}')
+          echo "WORKER_IMAGE=$image" >> "$GITHUB_ENV"
+          mkdir -p evidence
+          printf '%s\n' "$image" > evidence/worker-image.txt
+          docker version > evidence/docker-version.txt
+      - name: Exercise actual isolation and cleanup
+        run: |
+          set -o pipefail
+          python -m unittest integration/test_docker_runtime.py -v 2>&1 | tee evidence/runtime-tests.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: isolated-runtime-${{ github.sha }}
+          path: evidence/
+          retention-days: 30
