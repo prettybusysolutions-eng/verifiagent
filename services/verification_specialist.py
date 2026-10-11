@@ -63,7 +63,11 @@ class VerificationSpecialist:
         report = vs.finalize()
     """
 
-    def __init__(self, config: VSConfig):
+    def __init__(self, config: VSConfig, target_adapter=None, state_observer=None, probe_oracle=None, command_runner=None):
+        self.target_adapter = target_adapter
+        self.state_observer = state_observer
+        self.probe_oracle = probe_oracle
+        self.command_runner = command_runner or (lambda command, path: None)
         self.config = config
         self.report = VerificationReport()
         self.claims_found: list[str] = []
@@ -98,279 +102,97 @@ class VerificationSpecialist:
             for match in re.finditer(pattern, transcript):
                 self.shortcuts_found.append(match.group())
 
-    def verify_build(self) -> CheckResult:
-        """Run the build. A broken build is automatic FAIL."""
-        cmd = self._detect_build_command()
-        if not cmd:
-            return CheckResult(
-                name="Build",
-                command="none detected",
-                output="No build command found",
-                passed=True,
-            )
+    def _result(self, name, command, output, passed, probe=False):
+        if probe:
+            kind = {"Boundary": ProbeType.BOUNDARY, "Idempotency": ProbeType.IDEMPOTENCY, "Concurrency": ProbeType.CONCURRENCY, "Orphan": ProbeType.ORPHAN}.get(name.split()[0], ProbeType.BOUNDARY)
+            return ProbeResult(type=kind, name=name, command=command, output=output, passed=passed)
+        return CheckResult(name=name, command=command, output=output, passed=passed)
 
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=self.config.project_path,
-            capture_output=True,
-            text=True,
-            timeout=self.config.timeout_build,
-        )
+    def _record(self, result, probe=False):
+        (self.report.adversarial_probes if probe else self.report.checks).append(result)
+        if result.passed is False:
+            self.report.fail_reasons.append(result.name + ": observed failure")
 
-        check = CheckResult(
-            name="Build",
-            command=cmd,
-            output=result.stdout + result.stderr,
-            passed=(result.returncode == 0),
-            expected="exit code 0",
-            actual=f"exit code {result.returncode}" if result.returncode != 0 else "exit code 0",
-        )
-        self.report.checks.append(check)
-        if not check.passed:
-            self.report.fail_reasons.append(f"Build failed: {check.actual}")
+    def verify_build(self):
+        return self._run_command("Build", self._detect_build_command(), self.config.project_path)
+
+    def verify_tests(self):
+        return self._run_command("Test Suite", self._detect_test_command(), self.config.project_path)
+
+    def verify_lint(self):
+        return self._run_command("Lint", self._detect_linter_command(), self.config.project_path)
+
+
+    def _unknown(self, name, command, reason, probe=False):
+        self.report.partial_reasons.append(reason)
+        result = self._result(name, command, reason, None, probe)
+        self._record(result, probe)
+        return result
+
+    def _run_command(self, name, command, project_path):
+        if not command:
+            return self._unknown(name, "none detected", f"{name}: no configured command")
+        try:
+            result = self.command_runner(command, project_path)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return self._unknown(name, command, project_path + ": " + type(exc).__name__)
+        if result is None:
+            return self._unknown(name, command, "No isolated command runner configured")
+        check = self._result(name, command, result.stdout + result.stderr, result.returncode == 0)
+        self._record(check)
         return check
 
-    def verify_tests(self) -> CheckResult:
-        """Run the test suite. Failing tests are automatic FAIL."""
-        cmd = self._detect_test_command()
-        if not cmd:
-            return CheckResult(
-                name="Test Suite",
-                command="none detected",
-                output="No test command found",
-                passed=True,
-            )
+    def _invoke(self, target, params):
+        if self.target_adapter is None:
+            raise RuntimeError("No real target adapter configured")
+        return self.target_adapter(target, params)
 
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=self.config.project_path,
-            capture_output=True,
-            text=True,
-            timeout=self.config.timeout_test,
-        )
+    def _probe(self, name, target, params, kind, calls=1, parallel=False):
+        # Correctness belongs to a target-specific oracle, never response strings.
+        if self.target_adapter is None or self.state_observer is None or self.probe_oracle is None:
+            return self._unknown(name, target, "Probe requires a real adapter, independent state observer and oracle", True)
+        try:
+            before = self.state_observer()
+            if parallel:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=calls) as pool:
+                    results = list(pool.map(lambda _: self._invoke(target, params.copy()), range(calls)))
+            else:
+                results = [self._invoke(target, params.copy()) for _ in range(calls)]
+            after = self.state_observer()
+            passed = self.probe_oracle(kind, params, before, results, after)
+            if passed is not True and passed is not False:
+                return self._unknown(name, target, "Oracle did not provide a boolean verdict", True)
+        except Exception as exc:
+            return self._unknown(name, target, "Probe could not obtain evidence: " + type(exc).__name__, True)
+        result = self._result(name, target, repr({"before": before, "results": results, "after": after}), passed, True)
+        self._record(result, True)
+        return result
 
-        check = CheckResult(
-            name="Test Suite",
-            command=cmd,
-            output=result.stdout + result.stderr,
-            passed=(result.returncode == 0),
-            expected="exit code 0",
-            actual=f"exit code {result.returncode}" if result.returncode != 0 else "exit code 0",
-        )
-        self.report.checks.append(check)
-        if not check.passed:
-            self.report.fail_reasons.append(f"Tests failed: {check.actual}")
-        return check
+    def adversarial_probe_boundary_values(self, func_or_endpoint, params, boundary_values=None):
+        if not params:
+            return [self._unknown("Boundary", func_or_endpoint, "No boundary parameter specified", True)]
+        values = boundary_values if boundary_values is not None else [0, -1, "", "x" * 10000, 2**31 - 1]
+        key = next(iter(params))
+        return [self._probe("Boundary " + repr(value), func_or_endpoint, {**params, key: value}, "boundary") for value in values]
 
-    def verify_lint(self) -> CheckResult:
-        """Run linter if configured."""
-        cmd = self._detect_linter_command()
-        if not cmd:
-            return CheckResult(
-                name="Lint",
-                command="none",
-                output="No linter detected",
-                passed=True,
-            )
+    def adversarial_probe_idempotency(self, func_or_endpoint, params):
+        return [self._probe("Idempotency", func_or_endpoint, params, "idempotency", calls=2)]
 
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=self.config.project_path,
-            capture_output=True,
-            text=True,
-            timeout=self.config.timeout_lint,
-        )
+    def adversarial_probe_concurrency(self, func_or_endpoint, params, num_parallel=5):
+        if not 1 <= num_parallel <= 32:
+            raise ValueError("Concurrency must be in [1, 32]")
+        return [self._probe("Concurrency", func_or_endpoint, params, "concurrency", calls=num_parallel, parallel=True)]
 
-        check = CheckResult(
-            name="Lint",
-            command=cmd,
-            output=result.stdout + result.stderr,
-            passed=(result.returncode == 0),
-            expected="exit code 0",
-            actual=f"exit code {result.returncode}" if result.returncode != 0 else "exit code 0",
-        )
-        self.report.checks.append(check)
-        return check
+    def adversarial_probe_orphan_operation(self, func_or_endpoint, params, non_existent_id=999999999):
+        key = next((key for key in ("id", "entity_id", "resource_id", "item_id", "user_id") if key in params), "id")
+        return self._probe("Orphan", func_or_endpoint, {**params, key: non_existent_id}, "orphan")
 
-    def adversarial_probe_boundary_values(
-        self,
-        func_or_endpoint: str,
-        params: dict,
-        boundary_values: Optional[list] = None,
-    ) -> list[ProbeResult]:
-        """
-        Test boundary values:
-        - 0
-        - -1
-        - empty string
-        - very long string (10KB)
-        - unicode (emoji bomb)
-        - MAX_INT (2^31 - 1)
-        """
-        if boundary_values is None:
-            boundary_values = [0, -1, "", "x" * 10000, "🔥💀🚀" * 100, 2**31 - 1]
-
-        results = []
-        for bv in boundary_values:
-            test_params = params.copy()
-            first_key = next(iter(test_params), None)
-            if first_key:
-                test_params[first_key] = bv
-
-            probe_result = self._call_endpoint(func_or_endpoint, test_params)
-            passed = self._check_boundary_handled(probe_result)
-
-            probe = ProbeResult(
-                type=ProbeType.BOUNDARY,
-                name=f"Boundary: {bv!r} on {first_key}",
-                command=f"invoke {func_or_endpoint} with {test_params}",
-                output=str(probe_result),
-                passed=passed,
-                severity=Severity.MEDIUM,
-                notes="Should return error or handle gracefully, not crash",
-            )
-            results.append(probe)
-            self.report.adversarial_probes.append(probe)
-            if not passed:
-                self.report.fail_reasons.append(f"Boundary failure: {probe.name}")
-        return results
-
-    def adversarial_probe_idempotency(
-        self,
-        func_or_endpoint: str,
-        params: dict,
-    ) -> list[ProbeResult]:
-        """
-        Test idempotency: same mutation twice.
-        - First call should succeed
-        - Second call should be no-op or graceful error (not duplicate)
-        """
-        results = []
-
-        # First call
-        r1 = self._call_endpoint(func_or_endpoint, params)
-        p1 = ProbeResult(
-            type=ProbeType.IDEMPOTENCY,
-            name="Idempotency (call 1)",
-            command=f"invoke {func_or_endpoint}",
-            output=str(r1),
-            passed=True,
-        )
-        results.append(p1)
-
-        # Second call
-        r2 = self._call_endpoint(func_or_endpoint, params)
-        passed = self._check_idempotent(r1, r2)
-        p2 = ProbeResult(
-            type=ProbeType.IDEMPOTENCY,
-            name="Idempotency (call 2 — same params)",
-            command=f"invoke {func_or_endpoint}",
-            output=str(r2),
-            passed=passed,
-            notes="Second call should be no-op or error, not duplicate resource",
-        )
-        results.append(p2)
-        self.report.adversarial_probes.append(p2)
-        if not passed:
-            self.report.fail_reasons.append(f"Idempotency failure: second call produced duplicate resource")
-        return results
-
-    def adversarial_probe_concurrency(
-        self,
-        func_or_endpoint: str,
-        params: dict,
-        num_parallel: Optional[int] = None,
-    ) -> list[ProbeResult]:
-        """
-        Test concurrency: parallel requests to create-if-not-exists.
-        Are duplicates created? Lost writes?
-        """
-        num = num_parallel or self.config.max_concurrency
-
-        def call():
-            return self._call_endpoint(func_or_endpoint, params)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num) as executor:
-            futures = [executor.submit(call) for _ in range(num)]
-            results_list = [f.result() for f in concurrent.futures.as_completed(futures)]
-
-        unique = len(set(str(r) for r in results_list))
-        passed = unique <= 2  # At most 2 unique states (success + error)
-
-        probe = ProbeResult(
-            type=ProbeType.CONCURRENCY,
-            name=f"Concurrency ({num} parallel calls)",
-            command=f"parallel {num}x {func_or_endpoint}",
-            output=f"{unique} unique result(s) from {num} calls: {results_list[:3]}",
-            passed=passed,
-            severity=Severity.HIGH,
-            notes=f"Expected ≤2 unique states, got {unique}",
-        )
-        self.report.adversarial_probes.append(probe)
-        if not passed:
-            self.report.fail_reasons.append(f"Concurrency failure: {unique} unique states from {num} identical calls")
-        return [probe]
-
-    def adversarial_probe_orphan_operation(
-        self,
-        func_or_endpoint: str,
-        params: dict,
-        non_existent_id: int = 999999999,
-    ) -> ProbeResult:
-        """
-        Test orphan operation: delete/reference a non-existent ID.
-        Should return graceful error, not crash.
-        """
-        test_params = params.copy()
-        id_keys = ["id", "entity_id", "resource_id", "item_id", "user_id"]
-        used_key = None
-
-        for key in id_keys:
-            if key in test_params:
-                test_params[key] = non_existent_id
-                used_key = key
-                break
-
-        if not used_key:
-            test_params["id"] = non_existent_id
-            used_key = "id"
-
-        result = self._call_endpoint(func_or_endpoint, test_params)
-        passed = self._check_graceful_error(result)
-
-        probe = ProbeResult(
-            type=ProbeType.ORPHAN,
-            name=f"Orphan: non-existent {used_key}={non_existent_id}",
-            command=f"invoke {func_or_endpoint} with {used_key}={non_existent_id}",
-            output=str(result),
-            passed=passed,
-            notes="Should return 404 or graceful error, not crash",
-        )
-        self.report.adversarial_probes.append(probe)
-        if not passed:
-            self.report.fail_reasons.append(f"Orphan operation failure: {probe.name}")
-        return probe
-
-    def finalize(self) -> VerificationReport:
-        """Finalize the report and issue verdict."""
+    def finalize(self):
         if not self.report.adversarial_probes:
-            self.report.partial_reasons.append(
-                "No adversarial probes were run. Happy-path confirmation only is not verification."
-            )
-
-        verdict = self.report.final_verdict()
-
-        # Add claims found as notes
-        if self.claims_found:
-            self.report.partial_reasons.append(
-                f"Claims found in transcript that may need verification: {self.claims_found}"
-            )
-
+            self.report.partial_reasons.append("No target-specific adversarial probes were run")
+        self.report.final_verdict()
         return self.report
-
     def _detect_build_command(self) -> Optional[str]:
         """Detect build command from project files."""
         p = Path(self.config.project_path)
@@ -421,49 +243,3 @@ class VerificationSpecialist:
                 return cmd
         return None
 
-    def _call_endpoint(self, func_or_endpoint: str, params: dict):
-        """
-        Call a function or HTTP endpoint.
-        Override in production to connect to real endpoints.
-        """
-        # For API surface: try HTTP call
-        if self.config.surface == "api" and func_or_endpoint.startswith("http"):
-            import urllib.request
-            import json
-            try:
-                data = json.dumps(params).encode()
-                req = urllib.request.Request(
-                    func_or_endpoint,
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    return {"status": "ok", "data": resp.read().decode()}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
-
-        # Fallback: return placeholder for non-API surfaces
-        return {"status": "ok", "params": params, "note": "endpoint not reachable in test"}
-
-    def _check_boundary_handled(self, result) -> bool:
-        """Check if boundary value was handled gracefully."""
-        s = str(result)
-        error_indicators = ["error", "invalid", "not found", "failed", "exception"]
-        return any(ind in s.lower() for ind in error_indicators) or "ok" in s.lower()
-
-    def _check_idempotent(self, result1, result2) -> bool:
-        """Check if operation was idempotent."""
-        s1, s2 = str(result1), str(result2)
-        if s1 == s2:
-            return True
-        if "already exists" in s1 or "already exists" in s2:
-            return True
-        if "not found" in s1 or "not found" in s2:
-            return True
-        return False
-
-    def _check_graceful_error(self, result) -> bool:
-        """Check if error was handled gracefully (not a crash)."""
-        s = str(result).lower()
-        graceful = ["error", "not found", "invalid", "404", "400", "403", "404", "500"]
-        return any(g in s for g in graceful)

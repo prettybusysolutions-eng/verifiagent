@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Attribution
     attribution_split: float = 0.70  # 70% to contributor
 
+    worker_image: Optional[str] = None
+    allowed_repositories: list[str] = []
+    report_db_path: str = "./state/reports.sqlite"
+
     # Paths
     memory_dir: str = "~/.openclaw/workspace-aurex/memory"
     scratch_dir: str = "/tmp/verifiagent-scratch"
@@ -49,3 +53,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

@@ -31,3 +31,6 @@ use the recorded commit to retrieve the same source later.
 This is a tested source snapshot, not a published versioned release or evidence
 that untested integrations work. Release publication and registry verification
 remain separate gates.
+
+
+Operator/API truth-boundary tests are mandatory. Before any remote-execution deployment, validate the pinned Docker image on a dedicated worker, kill/timeout cleanup, resource exhaustion and actual project dependencies. The current tests do not execute Docker. A hosted PR without target-specific oracles remains PARTIAL.

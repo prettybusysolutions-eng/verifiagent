@@ -19,10 +19,11 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 def verify_github_signature(
     payload: bytes,
     signature: str,
-    secret: str = settings.github_webhook_secret,
+    secret: Optional[str] = None,
 ) -> bool:
     """Verify GitHub webhook signature."""
-    if not signature:
+    secret = secret or settings.github_webhook_secret
+    if not secret or secret == "development-secret-change-me" or not signature:
         return False
     expected = "sha256=" + hmac.new(
             secret.encode(), payload, hashlib.sha256
@@ -38,8 +39,7 @@ async def verify_github_webhook(
 ):
     """Dependency to verify GitHub webhook signature."""
     if settings.github_webhook_secret == "development-secret-change-me":
-        # Skip verification in development
-        return True
+        raise HTTPException(status_code=503, detail="Webhook signing secret not configured")
 
     payload = await request.body()
     signature = x_hub_signature_256 or x_hub_signature
@@ -82,42 +82,7 @@ async def github_webhook(
             repo_url = repo.get("html_url", "")
             repo_full = repo.get("full_name", "")
 
-            # Queue verification (in production: use a task queue)
-            # For now: run synchronously with timeout
-            try:
-                engine = VerdictEngine()
-                report = engine.verify_pr(
-                    repo_url=repo_url,
-                    commit_sha=commit_sha,
-                    pr_url=pr_url,
-                )
-
-                # Post GitHub Check Run if we have installation context
-                installation_id = installation.get("id") if installation else None
-                if installation_id and commit_sha and repo_full:
-                    try:
-                        gh_app.create_check_run(
-                            repo_full=repo_full,
-                            commit_sha=commit_sha,
-                            installation_id=int(installation_id),
-                            verdict=report.verdict.value,
-                            summary=report.summary,
-                            report_id=str(report.id),
-                        )
-                    except Exception as check_err:
-                        pass  # Don't fail the webhook if Check Run post fails
-
-                return {
-                    "status": "verification_complete",
-                    "report_id": str(report.id),
-                    "verdict": report.verdict.value,
-                    "summary": report.summary,
-                }
-            except Exception as e:
-                return {
-                    "status": "verification_failed",
-                    "error": str(e),
-                }
+            raise HTTPException(status_code=503, detail="Webhook execution requires durable admission and worker integration; use authenticated PR submission")
 
     elif event == "installation":
         # GitHub App installed/uninstalled
@@ -136,4 +101,5 @@ async def github_webhook(
 async def stripe_webhook(request: Request):
     """Handle Stripe webhook events."""
     # For future: handle payment events
-    return {"status": "received"}
+    raise HTTPException(status_code=501, detail="Stripe webhook processing is not implemented")
+

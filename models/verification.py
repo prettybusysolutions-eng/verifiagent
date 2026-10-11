@@ -40,7 +40,7 @@ class CheckResult(BaseModel):
     name: str
     command: str
     output: str = ""
-    passed: bool = True
+    passed: Optional[bool] = None
     expected: Optional[str] = None
     actual: Optional[str] = None
     notes: Optional[str] = None
@@ -51,7 +51,7 @@ class ProbeResult(BaseModel):
     name: str
     command: str
     output: str = ""
-    passed: bool = True
+    passed: Optional[bool] = None
     severity: Severity = Severity.MEDIUM
     notes: Optional[str] = None
 
@@ -90,12 +90,12 @@ class VerificationReport(BaseModel):
     partial_reasons: list[str] = Field(default_factory=list)
 
     def final_verdict(self) -> VerdictType:
-        if self.fail_reasons:
+        if self.fail_reasons or any(c.passed is False for c in self.checks + self.adversarial_probes):
             self.verdict = VerdictType.FAIL
             self.summary = f"FAIL — {len(self.fail_reasons)} issue(s)"
-        elif not self.checks and not self.adversarial_probes:
+        elif self.partial_reasons or any(c.passed is None for c in self.checks + self.adversarial_probes) or not (self.checks or self.adversarial_probes):
             self.verdict = VerdictType.PARTIAL
-            self.summary = "PARTIAL — no checks could be run"
+            self.summary = "PARTIAL — incomplete or unavailable verification evidence"
         else:
             self.verdict = VerdictType.PASS
             self.summary = f"PASS — {len(self.checks)} checks, {len(self.adversarial_probes)} adversarial probes"
@@ -105,7 +105,8 @@ class VerificationReport(BaseModel):
 class VerificationRequest(BaseModel):
     repo_url: str
     commit_sha: str
-    diff: Optional[str] = None
+    base_sha: Optional[str] = None
+    diff: Optional[str] = Field(default=None, max_length=1048576)
     pr_url: Optional[str] = None
     language: Optional[str] = "python"
     surface: Optional[str] = None  # api, cli, gui, library
@@ -116,3 +117,4 @@ class WebhookPayload(BaseModel):
     pull_request: Optional[dict] = None
     repository: Optional[dict] = None
     installation_id: Optional[int] = None
+

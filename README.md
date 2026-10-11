@@ -1,204 +1,37 @@
 # VerifiAgent
 
-Verification infrastructure for software that needs to survive contact with reality.
+An operator-only verification pilot. Static diff scanning and configured command checks are distinct from target-specific adversarial verification.
 
-VerifiAgent applies adversarial checks to code, diffs, and delivery workflows so failures are caught before they become cost, exposure, or rework.
+## Evidence contract
 
-**Start here:** [run the local health-contract quickstart](QUICKSTART.md).
+- `FAIL`: a configured check or target-specific state oracle observed a failure.
+- `PARTIAL`: missing commands, adapters, observations, interrupted jobs, preparation failures or incomplete coverage.
+- `PASS`: all requested evidence exists and no failure/unknown condition remains.
 
-Release status and gates: [RELEASING.md](RELEASING.md).
+Identical responses do not prove idempotency. A probe requires a real target adapter, an independently observed before/after state, and an explicit boolean correctness oracle. The hosted PR path has no automatic target oracle and therefore does not claim complete adversarial verification.
 
-## Standard
-Not “did it run.”
-Did it hold up.
-
-## The Problem
-
-Code-generation systems can produce code and tests in the same loop, creating a
-risk of circular verification.
-
-- They run tests written by the **same AI that wrote the bugs** — circular
-- They check code quality, not **actual behavior at runtime**
-- They miss: boundary failures, idempotency bugs, concurrency races, orphan operations
-- No compliance artifact for SOC2, ISO 27001
-
----
-
-## The Solution
-
-```
-PR created
-    ↓
-SecurityMonitor (pre-action guard)
-    ↓ [BLOCK] → don't execute, report why
-    ↓ [ALLOW] → continue
-    ↓
-Build the app
-    ↓
-VerificationSpecialist (adversarial testing)
-    ↓ → boundary values, idempotency, concurrency, orphan ops
-    ↓
-VERDICT: PASS | FAIL | PARTIAL
-    ↓
-Report generated (compliance artifact)
-    ↓
-AttributionLedger (70/30 on verified contributions)
-```
-
----
-
-## What We Test
-
-### SecurityMonitor
-- **Credential embedding** — API keys hardcoded in diff
-- **Force push** — rewriting remote history
-- **Production deploy** — bypassing review
-- **Blind apply** — `--yes --force` flags
-- **External code execution** — `curl | bash`
-- **Destructive local** — `rm -rf` without target naming
-- **Scope escalation** — action beyond original task
-- **Real-world transactions** — financial ops
-
-### VerificationSpecialist — Adversarial Probes
-
-| Probe | What it does |
-|-------|-------------|
-| **Boundary** | 0, -1, empty, 10KB string, unicode bomb, MAX_INT |
-| **Idempotency** | Same mutation twice — duplicate or no-op? |
-| **Concurrency** | 10 parallel create-if-not-exists — race condition? |
-| **Orphan** | Delete/reference non-existent ID — graceful error? |
-
----
-
-## Installation
+## Local evaluation
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your credentials
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
 uvicorn app:app --host 127.0.0.1 --port 8003
 ```
 
----
+`GET /verify/health` is liveness. `GET /verify/ready` returns 503 until the durable store, authentication, allowlist and local worker image are available. Health does not establish readiness.
 
-## API Endpoints
+Configure `API_KEY_HASH` as the SHA256 hexadecimal digest of a private operator key. Send that key in `X-API-Key`. `/verify/local`, `/verify/pr`, and report retrieval fail closed without configured authentication. Reports are stored under `REPORT_DB_PATH` (default `./state/reports.sqlite`) and scoped to the authenticated operator fingerprint.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/verify/pr` | Trigger full PR verification (async) |
-| `POST` | `/verify/local` | Verify local diff (sync) |
-| `GET` | `/verify/report/{id}` | Fetch verification report |
-| `GET` | `/verify/health` | Liveness probe |
-| `GET` | `/verify/ready` | Readiness probe |
-| `POST` | `/webhooks/github` | GitHub App webhook receiver |
+The store is a single-process pilot. At startup, queued/running jobs become `PARTIAL` with an interruption reason; they are never silently retried. Multiple API instances must not share this recovery model until a lease-based worker queue exists.
 
----
+## Isolated PR commands
 
-## Verification Report
+Configure `ALLOWED_REPOSITORIES` as a JSON array of canonical HTTPS GitHub URLs and `WORKER_IMAGE` as an already-local image pinned with `@sha256:<digest>`. Supply full `commit_sha`, `base_sha` and `pr_url`. Docker commands have no network, no host credentials, read-only source/root filesystem, a non-root user, dropped capabilities, bounded memory/CPU/PIDs and temporary writable storage. Missing Docker/image configuration never falls back to host execution. Select an image containing the tested project's dependencies; dependencies cannot be fetched during isolated commands.
 
-```json
-{
-  "id": "uuid",
-  "pr_url": "https://github.com/org/repo/pull/1",
-  "verdict": "FAIL",
-  "security_blocks": [
-    {
-      "condition": "credential_embed",
-      "reason": "BLOCK: Embedding secrets in code...",
-      "severity": "HIGH",
-      "allowed": false
-    }
-  ],
-  "checks": [
-    {
-      "name": "Build",
-      "command": "npm run build",
-      "passed": true
-    }
-  ],
-  "adversarial_probes": [
-    {
-      "type": "idempotency",
-      "name": "Idempotency (call 2 — same params)",
-      "passed": false,
-      "notes": "Second call produced duplicate resource"
-    }
-  ],
-  "duration_ms": 4723,
-  "summary": "FAIL — 2 issue(s)"
-}
-```
+This worker adapter is not an independently audited hostile-code sandbox. Dedicated worker hosts and durable leases are required before untrusted multi-tenant deployment. Resource controls do not eliminate kernel/runtime vulnerabilities. This change's tests validate admission, verdicts, ownership, restart handling and command construction; an actual Docker execution trial is a separate deployment gate.
 
----
+GitHub webhooks require a configured signing secret. Automatic webhook-triggered execution returns 503 until durable admission is integrated. Stripe webhook processing returns 501; it does not falsely acknowledge fulfillment.
 
-## Pricing
+## Boundaries
 
-| Tier | Price | Verifications/month |
-|------|-------|-------------------|
-| Free | $0 | 10 |
-| Pro | $49/seat | 500 |
-| Team | $199 | 2000 + dashboard |
-| Enterprise | $999 | Unlimited + compliance + SSO |
-
-Attribution claims paid out at **70/30** (contributor / VerifiAgent) from subscription revenue.
-
----
-
-## GitHub App Integration
-
-1. Create a GitHub App in your organization settings
-2. Set webhook URL to `https://your-domain.com/webhooks/github`
-3. Install on repos you want protected
-4. On PR open/sync: VerifiAgent runs automatically
-5. FAIL verdict → comment posted + merge blocked
-
----
-
-## Architecture
-
-```
-verifiagent/
-├── app.py                          # FastAPI app + lifespan
-├── config.py                       # Settings
-├── routes/
-│   ├── verify.py                   # /verify/* endpoints
-│   └── webhooks.py                 # /webhooks/* endpoints
-├── services/
-│   ├── security_monitor.py          # Pre-action guard
-│   ├── verification_specialist.py   # Adversarial testing
-│   ├── verdict_engine.py           # Orchestrator
-│   └── attribution_ledger.py        # Payment tracking
-├── models/
-│   └── verification.py             # Data models
-└── scripts/
-    └── github_app.py               # GitHub App setup
-```
-
----
-
-## Built With
-
-- **SecurityMonitor** — from live Code system prompts (5876 tokens)
-- **VerificationSpecialist** — from live Code system prompts (2866 tokens)
-- **DreamConsolidation** — memory layer for session learning
-- **Context Nexus** — persistent memory infrastructure
-
----
-
-## Status
-
-v0.1 — Core components built
-- ✅ SecurityMonitor (14 BLOCK conditions, 6 ALLOW exceptions)
-- ✅ VerificationSpecialist (4 adversarial probe types)
-- ✅ VerdictEngine (orchestrator)
-- ✅ AttributionLedger (70/30 payment tracking)
-- ✅ FastAPI with health probes
-- ✅ GitHub webhook receiver
-- ⏳ GitHub App deployment
-- ⏳ Persistence layer (DB)
-- ⏳ Pricing/billing integration
-- ⏳ Compliance report generation
-
----
-
-**The verification product the AI coding space needs.**
+No production deployment, security certification, billing, compliance certification, contributor payout, independent review or performance advantage is established by these tests. Pricing is not a delivered billing contract. See [RELEASING.md](RELEASING.md) for artifact gates.
